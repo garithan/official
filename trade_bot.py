@@ -8,8 +8,8 @@ from utils import (
     get_positions,
     calculate_qty,
     place_order,
-    should_buy,
-    send_discord_alert
+    send_discord_alert,
+    should_buy
 )
 from dotenv import load_dotenv
 
@@ -48,15 +48,8 @@ async def trade_chunk(chunk, chunk_index):
                         price = ev["c"]
                         if should_buy(symbol, price) and symbol not in held:
                             qty = calculate_qty(price)
-                            place_order(symbol, qty, price)
+                            place_order(symbol, qty, price, symbol)
                             held.add(symbol)
-                            send_discord_alert(
-                                f"✅ Bought {symbol} @ ${price:.2f} (qty: {qty})\n"
-                                f"🎯 Sell 50% @ ${price * 1.05:.2f} (+5%)\n"
-                                f"🎯 Sell 25% @ ${price * 1.10:.2f} (+10%)\n"
-                                f"🟠 Trail stop 25% @ 3%\n"
-                                f"🛑 Stop loss @ ${price * 0.92:.2f} (-8%)"
-                            )
                 except Exception as e:
                     print(f"⚠️ Chunk {chunk_index} error: {e}")
                     await asyncio.sleep(2)
