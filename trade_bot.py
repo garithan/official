@@ -29,8 +29,9 @@ async def trade_stream():
         try:
             async with websockets.connect(uri, ping_interval=20, ping_timeout=20) as ws:
                 await ws.send(json.dumps({"action": "auth", "params": POLYGON_KEY}))
-                auth_msg = await ws.recv()
-                print(f"🔐 Auth response: {auth_msg}")
+                msg = await ws.recv()
+                print(f"📩 Received: {msg}")
+                data = json.loads(msg)
 
                 param_str = ",".join([f"A.{sym}" for sym in chunk])
                 await ws.send(json.dumps({"action": "subscribe", "params": param_str}))
