@@ -16,35 +16,29 @@ from dotenv import load_dotenv
 load_dotenv()
 POLYGON_KEY = os.getenv("POLYGON_API_KEY")
 
-async def trade_stream():
+async def trade_chunk(chunk, chunk_index):
     uri = "wss://socket.polygon.io/stocks"
-    all_chunks = load_watchlist_chunks()
-    print(f"🔢 Loaded {sum(len(c) for c in all_chunks)} total tickers across {len(all_chunks)} chunks")
-
     held = set(get_positions())
-    print(f"📦 Already holding: {held}")
 
-    for chunk_index, chunk in enumerate(all_chunks):
-        print(f"🔁 Starting chunk {chunk_index + 1}/{len(all_chunks)}")
-        try:
-            async with websockets.connect(uri, ping_interval=20, ping_timeout=20) as ws:
-                await ws.send(json.dumps({"action": "auth", "params": POLYGON_KEY}))
-                msg = await ws.recv()
-                print(f"📩 Received: {msg}")
-                data = json.loads(msg)
+    try:
+        async with websockets.connect(uri, ping_interval=20, ping_timeout=20) as ws:
+            await ws.send(json.dumps({"action": "auth", "params": POLYGON_KEY}))
+            auth_resp = await ws.recv()
+            print(f"✅ Chunk {chunk_index} auth: {auth_resp}")
 
-                param_str = ",".join([f"A.{sym}" for sym in chunk])
-                await ws.send(json.dumps({"action": "subscribe", "params": param_str}))
-                print(f"📡 Subscribed to {len(chunk)} tickers")
+            param_str = ",".join([f"A.{sym}" for sym in chunk])
+            await ws.send(json.dumps({"action": "subscribe", "params": param_str}))
+            print(f"📡 Chunk {chunk_index} subscribed to {len(chunk)} tickers")
 
-                async def keepalive():
-                    while True:
-                        await ws.send(json.dumps({"action": "ping"}))
-                        await asyncio.sleep(20)
-
-                asyncio.create_task(keepalive())
-
+            async def keepalive():
                 while True:
+                    await ws.send(json.dumps({"action": "ping"}))
+                    await asyncio.sleep(20)
+
+            asyncio.create_task(keepalive())
+
+            while True:
+                try:
                     msg = await ws.recv()
                     data = json.loads(msg)
                     for ev in data:
@@ -57,10 +51,23 @@ async def trade_stream():
                             place_order(symbol, qty, price)
                             held.add(symbol)
                             send_discord_alert(f"✅ Bought {symbol} x{qty} @ ${price:.2f}")
-        except Exception as e:
-            print(f"❌ Error in chunk {chunk_index + 1}: {e}")
-            await asyncio.sleep(2)
+                except Exception as e:
+                    print(f"⚠️ Chunk {chunk_index} error: {e}")
+                    await asyncio.sleep(2)
+    except Exception as e:
+        print(f"❌ Connection failed for chunk {chunk_index}: {e}")
+        await asyncio.sleep(5)
+
+async def main():
+    chunks = load_watchlist_chunks()
+    print(f"🚀 Starting {len(chunks)} WebSocket connections")
+
+    tasks = [
+        trade_chunk(chunk, i + 1)
+        for i, chunk in enumerate(chunks)
+    ]
+    await asyncio.gather(*tasks)
 
 if __name__ == "__main__":
-    print(f"🚀 Bot started at {datetime.now()}")
-    asyncio.run(trade_stream())
+    print(f"🔁 Bot booting at {datetime.now()}")
+    asyncio.run(main())
