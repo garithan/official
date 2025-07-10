@@ -1,63 +1,65 @@
 import asyncio
 import json
-import os
 import websockets
+import os
 from datetime import datetime
+from utils import (
+    load_watchlist_chunks,
+    get_positions,
+    calculate_qty,
+    place_order,
+    should_buy,
+    send_discord_alert
+)
 from dotenv import load_dotenv
-from utils import load_watchlist, get_positions, calculate_qty, place_order, should_buy
 
 load_dotenv()
 POLYGON_KEY = os.getenv("POLYGON_API_KEY")
 
-async def subscribe_to_tickers(ws, tickers, chunk_size=400):
-    for i in range(0, len(tickers), chunk_size):
-        chunk = tickers[i:i + chunk_size]
-        param_str = ",".join([f"A.{sym}" for sym in chunk])
-        await ws.send(json.dumps({"action": "subscribe", "params": param_str}))
-        await asyncio.sleep(1.0)
-
-async def send_keepalive(ws):
-    while True:
-        try:
-            await ws.ping()
-            await asyncio.sleep(15)
-        except Exception:
-            break
-
 async def trade_stream():
     uri = "wss://socket.polygon.io/stocks"
-    tickers = load_watchlist()
-    print(f"📄 Loaded {len(tickers)} tickers")
+    all_chunks = load_watchlist_chunks()
+    print(f"🔢 Loaded {sum(len(c) for c in all_chunks)} total tickers across {len(all_chunks)} chunks")
 
-    async with websockets.connect(uri, ping_interval=None) as ws:
-        print("🟢 Connected to Polygon")
-        await ws.send(json.dumps({"action": "auth", "params": POLYGON_KEY}))
-        print("🔐 Auth sent")
+    held = set(get_positions())
+    print(f"📦 Already holding: {held}")
 
-        await subscribe_to_tickers(ws, tickers)
+    for chunk_index, chunk in enumerate(all_chunks):
+        print(f"🔁 Starting chunk {chunk_index + 1}/{len(all_chunks)}")
+        try:
+            async with websockets.connect(uri, ping_interval=20, ping_timeout=20) as ws:
+                await ws.send(json.dumps({"action": "auth", "params": POLYGON_KEY}))
+                auth_msg = await ws.recv()
+                print(f"🔐 Auth response: {auth_msg}")
 
-        held = set(get_positions())
-        print(f"📦 Already holding: {held}")
+                param_str = ",".join([f"A.{sym}" for sym in chunk])
+                await ws.send(json.dumps({"action": "subscribe", "params": param_str}))
+                print(f"📡 Subscribed to {len(chunk)} tickers")
 
-        asyncio.create_task(send_keepalive(ws))
+                async def keepalive():
+                    while True:
+                        await ws.send(json.dumps({"action": "ping"}))
+                        await asyncio.sleep(20)
 
-        while True:
-            try:
-                msg = await ws.recv()
-                data = json.loads(msg)
-                for ev in data:
-                    if ev.get("ev") != "A":
-                        continue
-                    symbol = ev["sym"]
-                    price = ev["c"]
-                    if should_buy(symbol) and symbol not in held:
-                        qty = calculate_qty(price)
-                        place_order(symbol, qty, price)
-                        held.add(symbol)
-            except Exception as e:
-                print(f"❌ WebSocket Error: {e}")
-                await asyncio.sleep(1)
+                asyncio.create_task(keepalive())
+
+                while True:
+                    msg = await ws.recv()
+                    data = json.loads(msg)
+                    for ev in data:
+                        if ev.get("ev") != "A":
+                            continue
+                        symbol = ev["sym"]
+                        price = ev["c"]
+                        if should_buy(symbol, price) and symbol not in held:
+                            qty = calculate_qty(price)
+                            place_order(symbol, qty, price)
+                            held.add(symbol)
+                            send_discord_alert(f"✅ Bought {symbol} x{qty} @ ${price:.2f}")
+        except Exception as e:
+            print(f"❌ Error in chunk {chunk_index + 1}: {e}")
+            await asyncio.sleep(2)
 
 if __name__ == "__main__":
-    print(f"🚀 Starting bot at {datetime.now()}")
+    print(f"🚀 Bot started at {datetime.now()}")
     asyncio.run(trade_stream())
