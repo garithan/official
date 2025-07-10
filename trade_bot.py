@@ -111,4 +111,40 @@ def should_buy(symbol):
     return True
 
 # === LIVE TRADING LOOP ===
-async def trade
+async def trade_stream():
+    uri = f"wss://socket.polygon.io/stocks"
+    async with websockets.connect(f"{uri}?apiKey={POLYGON_KEY}") as ws:
+        print("🟢 Connected to Polygon (real-time)")
+
+        for symbol in WATCHLIST:
+            await ws.send(json.dumps({"action": "subscribe", "params": f"AM.{symbol}"}))
+
+        held = set(get_positions())
+        print(f"🎒 Current Positions: {held}")
+
+        while True:
+            try:
+                msg = await ws.recv()
+                data = json.loads(msg)
+                if isinstance(data, list):
+                    for event in data:
+                        if event['ev'] != 'AM':
+                            continue
+                        symbol = event['sym']
+                        candles[symbol].append(event)
+
+                        # VWAP update
+                        vwap_data[symbol]["cum_vol"] += event['v']
+                        vwap_data[symbol]["cum_dollar"] += event['v'] * ((event['h'] + event['l'] + event['c']) / 3)
+
+                        if should_buy(symbol) and symbol not in held:
+                            price = event['c']
+                            qty = calculate_qty(price)
+                            place_order(symbol, qty, price)
+                            held.add(symbol)
+            except Exception as e:
+                print("❌ WebSocket Error:", e)
+                continue
+
+if __name__ == "__main__":
+    asyncio.run(trade_stream())
