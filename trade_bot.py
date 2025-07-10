@@ -48,17 +48,8 @@ async def trade_chunk(chunk, chunk_index):
                         price = ev["c"]
                         if should_buy(symbol, price) and symbol not in held:
                             qty = calculate_qty(price)
-                            place_order(symbol, qty, price)
+                            place_order(symbol, qty, price, symbol)
                             held.add(symbol)
-
-                            send_discord_alert(f"""
-✅ Bought {symbol} @ ${price:.2f} (qty: {qty})
-🎯 Sell 50% @ +5%
-🎯 Sell 25% @ +10%
-🟠 Trail stop 25% @ 3%
-🕒 Final sell: 3:55PM closeout
-🛑 Stop loss @ -8%
-""")
                 except Exception as e:
                     print(f"⚠️ Chunk {chunk_index} error: {e}")
                     await asyncio.sleep(2)
