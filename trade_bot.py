@@ -50,16 +50,13 @@ async def trade_chunk(chunk, chunk_index):
                             qty = calculate_qty(price)
                             place_order(symbol, qty, price)
                             held.add(symbol)
-                            notify = (
+                            send_discord_alert(
                                 f"✅ Bought {symbol} @ ${price:.2f} (qty: {qty})\n"
                                 f"🎯 Sell 50% @ ${price * 1.05:.2f} (+5%)\n"
                                 f"🎯 Sell 25% @ ${price * 1.10:.2f} (+10%)\n"
                                 f"🟠 Trail stop 25% @ 3%\n"
-                                f"🛑 Stop loss @ ${price * 0.92:.2f} (-8%)\n"
-                                f"🕒 Sell remainder 5 min before close\n"
-                                f"📅 Executed: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+                                f"🛑 Stop loss @ ${price * 0.92:.2f} (-8%)"
                             )
-                            send_discord_alert(notify)
                 except Exception as e:
                     print(f"⚠️ Chunk {chunk_index} error: {e}")
                     await asyncio.sleep(2)
