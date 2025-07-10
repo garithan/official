@@ -1,82 +1,72 @@
+import asyncio
+import json
+import websockets
 import os
-import requests
-from alpaca_trade_api import REST
+from datetime import datetime
+from utils import (
+    load_watchlist_chunks,
+    get_positions,
+    calculate_qty,
+    place_order,
+    should_buy,
+    send_discord_alert
+)
 from dotenv import load_dotenv
 
 load_dotenv()
+POLYGON_KEY = os.getenv("POLYGON_API_KEY")
 
-ALPACA_KEY = os.getenv("ALPACA_KEY_ID")
-ALPACA_SECRET = os.getenv("ALPACA_SECRET_KEY")
-ALPACA_BASE_URL = os.getenv("ALPACA_BASE_URL")
-DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK")
-TRADE_PERCENT = float(os.getenv("TRADE_AMOUNT_PERCENT", "2"))
+async def trade_chunk(chunk, chunk_index):
+    uri = "wss://socket.polygon.io/stocks"
+    held = set(get_positions())
 
-alpaca = REST(ALPACA_KEY, ALPACA_SECRET, ALPACA_BASE_URL)
-
-def load_watchlist_chunks(chunk_size=400):
-    with open("tickers.txt", "r") as f:
-        lines = [line.strip() for line in f.readlines() if line.strip()]
-    return [lines[i:i + chunk_size] for i in range(0, len(lines), chunk_size)]
-
-def get_positions():
-    return [pos.symbol for pos in alpaca.list_positions()]
-
-def calculate_qty(price):
-    account = alpaca.get_account()
-    capital = float(account.cash) * (TRADE_PERCENT / 100)
-    return max(1, int(capital / price))
-
-def send_discord_alert(message):
-    if not DISCORD_WEBHOOK:
-        return
     try:
-        requests.post(DISCORD_WEBHOOK, json={"content": message})
+        async with websockets.connect(uri, ping_interval=20, ping_timeout=20) as ws:
+            await ws.send(json.dumps({"action": "auth", "params": POLYGON_KEY}))
+            auth_resp = await ws.recv()
+            print(f"✅ Chunk {chunk_index} auth: {auth_resp}")
+
+            param_str = ",".join([f"A.{sym}" for sym in chunk])
+            await ws.send(json.dumps({"action": "subscribe", "params": param_str}))
+            print(f"📡 Chunk {chunk_index} subscribed to {len(chunk)} tickers")
+
+            async def keepalive():
+                while True:
+                    await ws.send(json.dumps({"action": "ping"}))
+                    await asyncio.sleep(20)
+
+            asyncio.create_task(keepalive())
+
+            while True:
+                try:
+                    msg = await ws.recv()
+                    data = json.loads(msg)
+                    for ev in data:
+                        if ev.get("ev") != "A":
+                            continue
+                        symbol = ev["sym"]
+                        price = ev["c"]
+                        if should_buy(symbol, price) and symbol not in held:
+                            qty = calculate_qty(price)
+                            place_order(symbol, qty, price)
+                            held.add(symbol)
+                except Exception as e:
+                    print(f"⚠️ Chunk {chunk_index} error: {e}")
+                    await asyncio.sleep(2)
     except Exception as e:
-        print(f"❌ Failed to send Discord alert: {e}")
+        print(f"❌ Connection failed for chunk {chunk_index}: {e}")
+        await asyncio.sleep(5)
 
-def place_order(symbol, qty, price):
-    try:
-        limit_price = round(price * 1.05, 2)
-        stop_price = round(price * 0.92, 2)
-        trail_percent = 3
+async def main():
+    chunks = load_watchlist_chunks()
+    print(f"🚀 Starting {len(chunks)} WebSocket connections")
 
-        alpaca.submit_order(
-            symbol=symbol,
-            qty=int(qty * 0.5),
-            side='sell',
-            type='limit',
-            time_in_force='gtc',
-            limit_price=limit_price
-        )
+    tasks = [
+        trade_chunk(chunk, i + 1)
+        for i, chunk in enumerate(chunks)
+    ]
+    await asyncio.gather(*tasks)
 
-        alpaca.submit_order(
-            symbol=symbol,
-            qty=int(qty * 0.5),
-            side='sell',
-            type='trailing_stop',
-            trail_percent=trail_percent,
-            time_in_force='gtc'
-        )
-
-        alpaca.submit_order(
-            symbol=symbol,
-            qty=qty,
-            side='sell',
-            type='stop',
-            stop_price=stop_price,
-            time_in_force='gtc'
-        )
-
-        send_discord_alert(
-            f"✅ Bought {symbol} @ ${price:.2f} (qty: {qty})\n"
-            f"🎯 Sell 50% @ ${limit_price} (+5%)\n"
-            f"🟠 Trail stop 50% @ {trail_percent}%\n"
-            f"🛑 Stop loss @ ${stop_price} (-8%)"
-        )
-        print(f"🛒 Buy confirmed for {symbol}")
-    except Exception as e:
-        print(f"❌ Order error for {symbol}: {e}")
-
-def should_buy(symbol, price):
-    from random import random
-    return random() > 0.999  # Placeholder logic
+if __name__ == "__main__":
+    print(f"🔁 Bot booting at {datetime.now()}")
+    asyncio.run(main())
