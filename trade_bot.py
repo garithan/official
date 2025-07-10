@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 from utils import load_watchlist, get_positions, calculate_qty, place_order, should_buy
 
 load_dotenv()
-POLYGON_KEY = os.getenv("POLYGON_KEY")
+POLYGON_KEY = os.getenv("POLYGON_API_KEY")
 
 async def subscribe_to_tickers(ws, tickers, chunk_size=400):
     for i in range(0, len(tickers), chunk_size):
