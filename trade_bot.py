@@ -21,7 +21,7 @@ DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK")
 with open("qualified_watchlist.txt", "r") as f:
     WATCHLIST = [line.strip() for line in f.readlines() if line.strip()]
 
-# === DATA STRUCTURES ===
+# === DATA TRACKING ===
 candles = {sym: deque(maxlen=20) for sym in WATCHLIST}
 vwap_data = defaultdict(lambda: {"cum_vol": 0, "cum_dollar": 0})
 
@@ -83,8 +83,7 @@ def place_order(symbol, qty, price):
     print(msg)
     send_discord_message(msg)
 
-# === STRATEGY LOGIC ===
-
+# === ENTRY LOGIC ===
 def should_buy(symbol):
     if len(candles[symbol]) < 3:
         return False
@@ -101,7 +100,7 @@ def should_buy(symbol):
     if c3['c'] < current_vwap:
         return False
 
-    # RVOL check (current vol vs 10 candle avg)
+    # RVOL check
     volumes = [c['v'] for c in candles[symbol][-10:] if 'v' in c]
     if len(volumes) < 5:
         return False
@@ -111,42 +110,5 @@ def should_buy(symbol):
 
     return True
 
-# === WEBSOCKET HANDLER ===
-
-async def trade_stream():
-    uri = f"wss://socket.polygon.io/stocks"
-    async with websockets.connect(f"{uri}?apiKey={POLYGON_KEY}") as ws:
-        print("🟢 Connected to Polygon real-time")
-
-        for symbol in WATCHLIST:
-            await ws.send(json.dumps({"action": "subscribe", "params": f"AM.{symbol}"}))
-
-        held = set(get_positions())
-        print(f"Held positions: {held}")
-
-        while True:
-            try:
-                msg = await ws.recv()
-                data = json.loads(msg)
-                if isinstance(data, list):
-                    for event in data:
-                        if event['ev'] != 'AM':
-                            continue
-                        symbol = event['sym']
-                        candles[symbol].append(event)
-
-                        # Update VWAP
-                        vwap_data[symbol]["cum_vol"] += event['v']
-                        vwap_data[symbol]["cum_dollar"] += event['v'] * ((event['h'] + event['l'] + event['c']) / 3)
-
-                        if should_buy(symbol) and symbol not in held:
-                            price = event['c']
-                            qty = calculate_qty(price)
-                            place_order(symbol, qty, price)
-                            held.add(symbol)
-            except Exception as e:
-                print("❌ Error:", e)
-                continue
-
-if __name__ == "__main__":
-    asyncio.run(trade_stream())
+# === LIVE TRADING LOOP ===
+async def trade
