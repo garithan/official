@@ -13,21 +13,21 @@ def load_watchlist_chunks(chunk_size=400):
         lines = [line.strip() for line in f.readlines() if line.strip()]
     return [lines[i:i + chunk_size] for i in range(0, len(lines), chunk_size)]
 
+import alpaca_trade_api as tradeapi
+
+ALPACA_KEY = os.getenv("ALPACA_KEY_ID")
+ALPACA_SECRET = os.getenv("ALPACA_SECRET_KEY")
+ALPACA_BASE_URL = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+
+alpaca = tradeapi.REST(ALPACA_KEY, ALPACA_SECRET, ALPACA_BASE_URL)
+
 def get_positions():
     try:
-        headers = {
-            "APCA-API-KEY-ID": ALPACA_KEY_ID,
-            "APCA-API-SECRET-KEY": ALPACA_SECRET_KEY
-        }
-        resp = requests.get(f"{ALPACA_BASE_URL}/v2/positions", headers=headers)
-        if resp.status_code == 200:
-            return [pos["symbol"] for pos in resp.json()]
-        else:
-            print(f"⚠️ Couldn't fetch positions: {resp.status_code} {resp.text}")
-            return []
+        positions = alpaca.list_positions()
+        return {pos.symbol: float(pos.avg_entry_price) for pos in positions}
     except Exception as e:
-        print(f"❌ Error fetching positions: {e}")
-        return []
+        print(f"⚠️ Failed to fetch positions: {e}")
+        return {}
 
 def calculate_qty(price):
     capital = 1000 * (TRADE_PERCENT / 100)
