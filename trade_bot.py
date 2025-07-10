@@ -4,12 +4,12 @@ import json
 import os
 import requests
 from datetime import datetime
-from collections import deque
+from collections import deque, defaultdict
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# ENV VARS
+# === ENV VARS ===
 POLYGON_KEY = os.getenv("POLYGON_API_KEY")
 ALPACA_KEY_ID = os.getenv("ALPACA_KEY_ID")
 ALPACA_SECRET = os.getenv("ALPACA_SECRET_KEY")
@@ -17,13 +17,15 @@ ALPACA_BASE = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
 TRADE_PERCENT = float(os.getenv("TRADE_AMOUNT_PERCENT", "2"))
 DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK")
 
-# Load tickers from file
+# === INPUT TICKERS ===
 with open("qualified_watchlist.txt", "r") as f:
     WATCHLIST = [line.strip() for line in f.readlines() if line.strip()]
 
-candles = {sym: deque(maxlen=3) for sym in WATCHLIST}
+# === DATA STRUCTURES ===
+candles = {sym: deque(maxlen=20) for sym in WATCHLIST}
+vwap_data = defaultdict(lambda: {"cum_vol": 0, "cum_dollar": 0})
 
-# === ALPACA HELPERS ===
+# === ALPACA ===
 HEADERS = {
     "APCA-API-KEY-ID": ALPACA_KEY_ID,
     "APCA-API-SECRET-KEY": ALPACA_SECRET
@@ -56,8 +58,8 @@ def send_discord_message(text):
 
 def place_order(symbol, qty, price):
     url = f"{ALPACA_BASE}/v2/orders"
-    stop_price = round(price * 0.95, 2)  # 5% stop-loss
-    trail_pct = 5  # trailing stop %
+    stop_price = round(price * 0.95, 2)
+    trail_pct = 5
 
     order = {
         "symbol": symbol,
@@ -66,9 +68,7 @@ def place_order(symbol, qty, price):
         "type": "market",
         "time_in_force": "gtc",
         "order_class": "bracket",
-        "take_profit": {
-            "limit_price": round(price * 1.20, 2)
-        },
+        "take_profit": {"limit_price": round(price * 1.2, 2)},
         "stop_loss": {
             "stop_price": stop_price,
             "trail_percent": trail_pct
@@ -77,32 +77,52 @@ def place_order(symbol, qty, price):
 
     r = requests.post(url, headers=HEADERS, json=order)
     if r.status_code == 200:
-        msg = f"🚀 Bought {symbol} (qty: {qty}) at ${price:.2f} | SL: ${stop_price}, Trail: {trail_pct}%"
+        msg = f"🚀 BUY: {symbol} | Qty: {qty} | Entry: ${price:.2f} | SL: ${stop_price} | Trail: {trail_pct}%"
     else:
-        msg = f"❌ Failed to buy {symbol} – {r.status_code}: {r.text}"
-
+        msg = f"❌ ORDER FAIL: {symbol} | {r.status_code}: {r.text}"
     print(msg)
     send_discord_message(msg)
 
-# === LOGIC ===
+# === STRATEGY LOGIC ===
 
 def should_buy(symbol):
     if len(candles[symbol]) < 3:
         return False
-    c1, c2, c3 = candles[symbol]
-    return all(c['c'] > c['o'] for c in [c1, c2, c3])
 
-# === WEBSOCKET ===
+    c1, c2, c3 = candles[symbol][-3:]
+    if not all(c['c'] > c['o'] for c in [c1, c2, c3]):
+        return False
+
+    # VWAP check
+    vwap = vwap_data[symbol]
+    if vwap["cum_vol"] == 0:
+        return False
+    current_vwap = vwap["cum_dollar"] / vwap["cum_vol"]
+    if c3['c'] < current_vwap:
+        return False
+
+    # RVOL check (current vol vs 10 candle avg)
+    volumes = [c['v'] for c in candles[symbol][-10:] if 'v' in c]
+    if len(volumes) < 5:
+        return False
+    avg_vol = sum(volumes) / len(volumes)
+    if c3['v'] < 2 * avg_vol:
+        return False
+
+    return True
+
+# === WEBSOCKET HANDLER ===
 
 async def trade_stream():
-    uri = f"uri = f"wss://socket.polygon.io/stocks"
+    uri = f"wss://socket.polygon.io/stocks"
     async with websockets.connect(f"{uri}?apiKey={POLYGON_KEY}") as ws:
-        print("🟢 Connected to Polygon")
+        print("🟢 Connected to Polygon real-time")
+
         for symbol in WATCHLIST:
             await ws.send(json.dumps({"action": "subscribe", "params": f"AM.{symbol}"}))
 
         held = set(get_positions())
-        print(f"Currently held: {held}")
+        print(f"Held positions: {held}")
 
         while True:
             try:
@@ -114,6 +134,10 @@ async def trade_stream():
                             continue
                         symbol = event['sym']
                         candles[symbol].append(event)
+
+                        # Update VWAP
+                        vwap_data[symbol]["cum_vol"] += event['v']
+                        vwap_data[symbol]["cum_dollar"] += event['v'] * ((event['h'] + event['l'] + event['c']) / 3)
 
                         if should_buy(symbol) and symbol not in held:
                             price = event['c']
