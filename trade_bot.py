@@ -9,7 +9,8 @@ from utils import (
     calculate_qty,
     place_order,
     send_discord_alert,
-    should_buy
+    should_buy,
+    record_position
 )
 from dotenv import load_dotenv
 
@@ -48,7 +49,8 @@ async def trade_chunk(chunk, chunk_index):
                         price = ev["c"]
                         if should_buy(symbol, price) and symbol not in held:
                             qty = calculate_qty(price)
-                            place_order(symbol, qty, price, symbol)
+                            place_order(symbol, qty, price)
+                            record_position(symbol, price, qty)
                             held.add(symbol)
                 except Exception as e:
                     print(f"⚠️ Chunk {chunk_index} error: {e}")
