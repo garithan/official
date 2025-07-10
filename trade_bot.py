@@ -18,7 +18,8 @@ POLYGON_KEY = os.getenv("POLYGON_API_KEY")
 
 async def trade_chunk(chunk, chunk_index):
     uri = "wss://socket.polygon.io/stocks"
-    held = set(get_positions())
+    positions = get_positions()
+    held = set(positions.keys())
 
     try:
         async with websockets.connect(uri, ping_interval=20, ping_timeout=20) as ws:
