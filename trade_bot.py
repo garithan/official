@@ -1,55 +1,61 @@
+
+import os
+import json
+import requests
 import asyncio
 import websockets
-import json
-import os
-import requests
 from datetime import datetime
-from collections import deque, defaultdict
 from dotenv import load_dotenv
 
 load_dotenv()
 
+ALPACA_KEY = os.getenv("APCA_API_KEY_ID")
+ALPACA_SECRET = os.getenv("APCA_API_SECRET_KEY")
+ALPACA_BASE = "https://paper-api.alpaca.markets"
 POLYGON_KEY = os.getenv("POLYGON_API_KEY")
-ALPACA_KEY_ID = os.getenv("ALPACA_KEY_ID")
-ALPACA_SECRET = os.getenv("ALPACA_SECRET_KEY")
-ALPACA_BASE = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
-TRADE_PERCENT = float(os.getenv("TRADE_AMOUNT_PERCENT", "2"))
-DISCORD_WEBHOOK = os.getenv("DISCORD_WEBHOOK")
-
-with open("qualified_watchlist.txt", "r") as f:
-    WATCHLIST = [line.strip() for line in f if line.strip()]
-
-candles = {sym: deque(maxlen=20) for sym in WATCHLIST}
-vwap_data = defaultdict(lambda: {"cum_vol": 0, "cum_dollar": 0})
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
 
 HEADERS = {
-    "APCA-API-KEY-ID": ALPACA_KEY_ID,
+    "APCA-API-KEY-ID": ALPACA_KEY,
     "APCA-API-SECRET-KEY": ALPACA_SECRET
 }
 
-def get_positions():
-    r = requests.get(f"{ALPACA_BASE}/v2/positions", headers=HEADERS)
-    if r.status_code != 200:
-        return []
-    return [pos['symbol'] for pos in r.json()]
+print("🔑 POLYGON_KEY Loaded:", POLYGON_KEY[:5], flush=True)
 
-def get_account():
-    r = requests.get(f"{ALPACA_BASE}/v2/account", headers=HEADERS)
-    return r.json()
+with open("qualified_watchlist.txt", "r") as f:
+    WATCHLIST = [line.strip() for line in f if line.strip()]
+print("📄 Loaded", len(WATCHLIST), "tickers", flush=True)
 
-def calculate_qty(price):
-    account = get_account()
-    equity = float(account["cash"])
-    trade_amt = equity * (TRADE_PERCENT / 100)
-    return max(1, int(trade_amt / price))
+candles = {}  # Symbol: list of 1-min AM bars
+vwap_data = {}  # Symbol: cumulative VWAP
 
-def send_discord_message(text):
-    if not DISCORD_WEBHOOK:
-        return
+def send_discord_message(msg):
     try:
-        requests.post(DISCORD_WEBHOOK, json={"content": text})
+        requests.post(DISCORD_WEBHOOK_URL, json={"content": msg})
     except:
         pass
+
+def get_positions():
+    r = requests.get(f"{ALPACA_BASE}/v2/positions", headers=HEADERS)
+    if r.status_code == 200:
+        return [pos['symbol'] for pos in r.json()]
+    return []
+
+def calculate_qty(price):
+    capital = float(os.getenv("TOTAL_CAPITAL", "10000"))
+    risk_per_trade = capital * 0.02
+    qty = int(risk_per_trade // price)
+    return max(qty, 1)
+
+def should_buy(symbol):
+    c = candles.get(symbol, [])
+    if len(c) < 3:
+        return False
+    rvol = vwap_data[symbol]["cum_vol"] / (sum([x['v'] for x in c]) / len(c))
+    green_candles = sum([1 for x in c[-3:] if x['c'] > x['o']])
+    if green_candles >= 3 and rvol >= 1 and vwap_data[symbol]["cum_vol"] > 1000000:
+        return True
+    return False
 
 def place_order(symbol, qty, price):
     url = f"{ALPACA_BASE}/v2/orders"
@@ -97,36 +103,17 @@ def place_order(symbol, qty, price):
         f"💰 SELL 50% @ +{take_profit_pct}% = ${limit_price}\n"
         f"📉 TRAIL 50% with {stop_trail_pct}% stop"
     )
-    print(msg)
+    print(msg, flush=True)
     send_discord_message(msg)
 
-def should_buy(symbol):
-    if len(candles[symbol]) < 3:
-        return False
-    c1, c2, c3 = candles[symbol][-3:]
-    if not all(c['c'] > c['o'] for c in [c1, c2, c3]):
-        return False
-    vwap = vwap_data[symbol]
-    if vwap["cum_vol"] == 0:
-        return False
-    current_vwap = vwap["cum_dollar"] / vwap["cum_vol"]
-    if c3['c'] < current_vwap:
-        return False
-    volumes = [c['v'] for c in candles[symbol][-10:] if 'v' in c]
-    if len(volumes) < 5:
-        return False
-    avg_vol = sum(volumes) / len(volumes)
-    if c3['v'] < 2 * avg_vol:
-        return False
-    return True
-
 async def trade_stream():
+    print("🚀 Starting trade_stream()", flush=True)
     uri = "wss://socket.polygon.io/stocks"
     async with websockets.connect(uri) as ws:
-        print("🟢 Connected to Polygon")
+        print("🟢 Connected to Polygon", flush=True)
         await ws.send(json.dumps({"action": "auth", "params": POLYGON_KEY}))
         auth_resp = await ws.recv()
-        print("🔐 Auth:", auth_resp)
+        print("🔐 Auth:", auth_resp, flush=True)
 
         tickers = [f"AM.{sym}" for sym in WATCHLIST]
         chunk_size = 100
@@ -134,15 +121,18 @@ async def trade_stream():
             chunk = ",".join(tickers[i:i + chunk_size])
             await ws.send(json.dumps({"action": "subscribe", "params": chunk}))
             await asyncio.sleep(0.5)
-        print(f"✅ Subscribed to {len(WATCHLIST)} symbols.")
+
+        print("✅ Subscribed to", len(WATCHLIST), "symbols.", flush=True)
 
         held = set(get_positions())
-        print(f"🎒 Currently holding: {held}")
+        print("🎒 Currently holding:", held, flush=True)
 
         while True:
             try:
+                print("⏳ Waiting for WebSocket message at", datetime.now(), flush=True)
                 msg = await ws.recv()
                 data = json.loads(msg)
+
                 if isinstance(data, list):
                     for ev in data:
                         if ev.get('ev') != 'AM':
@@ -157,10 +147,11 @@ async def trade_stream():
                             qty = calculate_qty(price)
                             place_order(symbol, qty, price)
                             held.add(symbol)
+
             except Exception as e:
-                print(f"❌ WebSocket Error: {e}")
+                print(f"❌ WebSocket Error: {e}", flush=True)
                 await asyncio.sleep(1)
 
 if __name__ == "__main__":
-    print(f"🚀 Starting bot at {datetime.now()}")
+    print(f"🚀 Starting bot at {datetime.now()}", flush=True)
     asyncio.run(trade_stream())
