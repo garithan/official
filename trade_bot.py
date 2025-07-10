@@ -8,8 +8,8 @@ from utils import (
     get_positions,
     calculate_qty,
     place_order,
-    should_buy,
-    send_discord_alert
+    send_discord_alert,
+    should_buy
 )
 from dotenv import load_dotenv
 
@@ -19,16 +19,16 @@ POLYGON_KEY = os.getenv("POLYGON_API_KEY")
 async def trade_chunk(chunk, chunk_index):
     uri = "wss://socket.polygon.io/stocks"
     held = set(get_positions())
-    candles = {}
 
     try:
         async with websockets.connect(uri, ping_interval=20, ping_timeout=20) as ws:
             await ws.send(json.dumps({"action": "auth", "params": POLYGON_KEY}))
-            print(f"✅ Chunk {chunk_index} connected")
+            auth_resp = await ws.recv()
+            print(f"✅ Chunk {chunk_index} auth: {auth_resp}")
 
             param_str = ",".join([f"A.{sym}" for sym in chunk])
             await ws.send(json.dumps({"action": "subscribe", "params": param_str}))
-            print(f"📡 Chunk {chunk_index} subscribed")
+            print(f"📡 Chunk {chunk_index} subscribed to {len(chunk)} tickers")
 
             async def keepalive():
                 while True:
@@ -44,27 +44,23 @@ async def trade_chunk(chunk, chunk_index):
                     for ev in data:
                         if ev.get("ev") != "A":
                             continue
-                        sym = ev["sym"]
+                        symbol = ev["sym"]
                         price = ev["c"]
-                        open_price = ev["o"]
-
-                        if sym not in candles:
-                            candles[sym] = []
-
-                        # Track green candles
-                        candles[sym].append(price > open_price)
-                        if len(candles[sym]) > 3:
-                            candles[sym].pop(0)
-
-                        # Buy logic
-                        if (candles[sym] == [True, True, True] and
-                            should_buy(sym) and
-                            sym not in held):
+                        if should_buy(symbol, price) and symbol not in held:
                             qty = calculate_qty(price)
-                            place_order(sym, qty, price)
-                            held.add(sym)
+                            place_order(symbol, qty, price)
+                            held.add(symbol)
+
+                            send_discord_alert(f"""
+✅ Bought {symbol} @ ${price:.2f} (qty: {qty})
+🎯 Sell 50% @ +5%
+🎯 Sell 25% @ +10%
+🟠 Trail stop 25% @ 3%
+🕒 Final sell: 3:55PM closeout
+🛑 Stop loss @ -8%
+""")
                 except Exception as e:
-                    print(f"⚠️ Error in chunk {chunk_index}: {e}")
+                    print(f"⚠️ Chunk {chunk_index} error: {e}")
                     await asyncio.sleep(2)
     except Exception as e:
         print(f"❌ Connection failed for chunk {chunk_index}: {e}")
@@ -72,8 +68,12 @@ async def trade_chunk(chunk, chunk_index):
 
 async def main():
     chunks = load_watchlist_chunks()
-    print(f"🚀 Launching {len(chunks)} WebSocket chunks")
-    tasks = [trade_chunk(chunk, i + 1) for i, chunk in enumerate(chunks)]
+    print(f"🚀 Starting {len(chunks)} WebSocket connections")
+
+    tasks = [
+        trade_chunk(chunk, i + 1)
+        for i, chunk in enumerate(chunks)
+    ]
     await asyncio.gather(*tasks)
 
 if __name__ == "__main__":
