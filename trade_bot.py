@@ -95,7 +95,7 @@ def should_buy(symbol):
 # === WEBSOCKET ===
 
 async def trade_stream():
-    uri = f"wss://delayed.polygon.io/stocks"
+    uri = f"uri = f"wss://socket.polygon.io/stocks"
     async with websockets.connect(f"{uri}?apiKey={POLYGON_KEY}") as ws:
         print("🟢 Connected to Polygon")
         for symbol in WATCHLIST:
