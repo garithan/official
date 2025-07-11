@@ -70,3 +70,36 @@ def send_discord_alert(message):
         requests.post(DISCORD_WEBHOOK, json={"content": message})
     except Exception as e:
         print(f"❌ Failed to send Discord alert: {e}")
+
+
+def get_qty_held(symbol):
+    try:
+        with open(POSITIONS_FILE, "r") as f:
+            data = json.load(f)
+        return data[symbol]["qty"]
+    except:
+        return 0
+
+def remove_position(symbol):
+    try:
+        with open(POSITIONS_FILE, "r") as f:
+            data = json.load(f)
+        if symbol in data:
+            del data[symbol]
+        with open(POSITIONS_FILE, "w") as f:
+            json.dump(data, f)
+    except:
+        pass
+
+def should_sell(symbol, price):
+    try:
+        with open(POSITIONS_FILE, "r") as f:
+            data = json.load(f)
+        entry = data.get(symbol)
+        if not entry:
+            return False
+        entry_price = entry["price"]
+        change = (price - entry_price) / entry_price
+        return change >= 0.05 or change <= -0.08  # example logic: +5% target or -8% stop
+    except:
+        return False
