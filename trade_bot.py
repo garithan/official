@@ -27,7 +27,7 @@ async def trade_chunk(chunk, chunk_index):
     held = set(get_positions())
 
     try:
-        async with websockets.connect(uri, ping_interval=20, ping_timeout=20) as ws:
+        async with websockets.connect(uri, ping_interval=30, ping_timeout=30) as ws:
             await ws.send(json.dumps({"action": "auth", "params": POLYGON_KEY}))
             auth_resp = await ws.recv()
             print(f"✅ Chunk {chunk_index} auth: {auth_resp}")
@@ -36,13 +36,7 @@ async def trade_chunk(chunk, chunk_index):
             await ws.send(json.dumps({"action": "subscribe", "params": param_str}))
             print(f"📡 Chunk {chunk_index} subscribed to {len(chunk)} tickers")
 
-            async def keepalive():
-                while True:
-                    await ws.send(json.dumps({"action": "ping"}))
-                    await asyncio.sleep(20)
-
-            asyncio.create_task(keepalive())
-
+            # Listen for incoming messages
             while True:
                 msg = await ws.recv()
                 try:
@@ -78,7 +72,7 @@ async def trade_chunk(chunk, chunk_index):
         await asyncio.sleep(5)
 
 async def main():
-    chunks = load_watchlist_chunks()
+    chunks = load_watchlist_chunks(chunk_size=300)  # limit to avoid 1008 error
     print(f"🚀 Starting {len(chunks)} WebSocket connections")
 
     tasks = [trade_chunk(chunk, i + 1) for i, chunk in enumerate(chunks)]
