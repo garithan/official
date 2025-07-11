@@ -1,4 +1,4 @@
 requests
 websockets
 python-dotenv
-alpaca-trade-api
+alpaca-py==0.18.1
