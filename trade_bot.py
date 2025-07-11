@@ -1,3 +1,4 @@
+
 import asyncio
 import json
 import websockets
@@ -10,7 +11,11 @@ from utils import (
     place_order,
     send_discord_alert,
     should_buy,
-    record_position
+    should_sell,
+    record_position,
+    get_qty_held,
+    remove_position,
+    update_high
 )
 from dotenv import load_dotenv
 
@@ -33,69 +38,42 @@ async def trade_chunk(chunk, chunk_index):
 
             async def keepalive():
                 while True:
-        msg = await ws.recv()
-        try:
-            data = json.loads(msg)
-            for ev in data:
-                if ev.get("ev") != "A":
-                    continue
-                symbol = ev["sym"]
-                price = ev["c"]
-                try:
-                    if should_buy(symbol, price) and symbol not in held:
-                        qty = calculate_qty(price)
-                        place_order(symbol, qty, price)
-                        record_position(symbol, price, qty)
-                        held.add(symbol)
-                    elif symbol in held and should_sell(symbol, price):
-                        qty = get_qty_held(symbol)
-                        place_order(symbol, -qty, price)
-                        remove_position(symbol)
-                        held.remove(symbol)
-                except Exception as trade_error:
-                    print(f"🚫 Trade error for {symbol}: {trade_error}")
                     await ws.send(json.dumps({"action": "ping"}))
                     await asyncio.sleep(20)
 
             asyncio.create_task(keepalive())
 
             while True:
-        msg = await ws.recv()
-        try:
-            data = json.loads(msg)
-            for ev in data:
-                if ev.get("ev") != "A":
-                    continue
-                symbol = ev["sym"]
-                price = ev["c"]
+                msg = await ws.recv()
                 try:
-                    if should_buy(symbol, price) and symbol not in held:
-                        qty = calculate_qty(price)
-                        place_order(symbol, qty, price)
-                        record_position(symbol, price, qty)
-                        held.add(symbol)
-                    elif symbol in held and should_sell(symbol, price):
-                        qty = get_qty_held(symbol)
-                        place_order(symbol, -qty, price)
-                        remove_position(symbol)
-                        held.remove(symbol)
-                except Exception as trade_error:
-                    print(f"🚫 Trade error for {symbol}: {trade_error}")
-                try:
+                    data = json.loads(msg)
                     for ev in data:
                         if ev.get("ev") != "A":
                             continue
                         symbol = ev["sym"]
                         price = ev["c"]
+
                         if should_buy(symbol, price) and symbol not in held:
                             qty = calculate_qty(price)
                             place_order(symbol, qty, price)
                             record_position(symbol, price, qty)
                             held.add(symbol)
-        except Exception as e:
+                            send_discord_alert(f"🟢 Bought {symbol} @ ${price:.2f} (qty: {qty})")
+
+                        elif symbol in held:
+                            update_high(symbol, price)
+                            if should_sell(symbol, price):
+                                qty = get_qty_held(symbol)
+                                place_order(symbol, -qty, price)
+                                remove_position(symbol)
+                                held.remove(symbol)
+                                send_discord_alert(f"💰 Sold {symbol} @ ${price:.2f} (qty: {qty})")
+
+                except Exception as e:
                     print(f"⚠️ Chunk {chunk_index} error: {e}")
                     await asyncio.sleep(2)
-        except Exception as e:
+
+    except Exception as e:
         print(f"❌ Connection failed for chunk {chunk_index}: {e}")
         await asyncio.sleep(5)
 
@@ -103,10 +81,7 @@ async def main():
     chunks = load_watchlist_chunks()
     print(f"🚀 Starting {len(chunks)} WebSocket connections")
 
-    tasks = [
-        trade_chunk(chunk, i + 1)
-        for i, chunk in enumerate(chunks)
-    ]
+    tasks = [trade_chunk(chunk, i + 1) for i, chunk in enumerate(chunks)]
     await asyncio.gather(*tasks)
 
 if __name__ == "__main__":
