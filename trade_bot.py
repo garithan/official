@@ -33,37 +33,71 @@ async def trade_chunk(chunk, chunk_index):
 
             async def keepalive():
                 while True:
+        msg = await ws.recv()
+        try:
+            data = json.loads(msg)
+            for ev in data:
+                if ev.get("ev") != "A":
+                    continue
+                symbol = ev["sym"]
+                price = ev["c"]
+                try:
+                    if should_buy(symbol, price) and symbol not in held:
+                        qty = calculate_qty(price)
+                        place_order(symbol, qty, price)
+                        record_position(symbol, price, qty)
+                        held.add(symbol)
+                    elif symbol in held and should_sell(symbol, price):
+                        qty = get_qty_held(symbol)
+                        place_order(symbol, -qty, price)
+                        remove_position(symbol)
+                        held.remove(symbol)
+                except Exception as trade_error:
+                    print(f"🚫 Trade error for {symbol}: {trade_error}")
                     await ws.send(json.dumps({"action": "ping"}))
                     await asyncio.sleep(20)
 
             asyncio.create_task(keepalive())
 
-while True:
-    try:
+            while True:
         msg = await ws.recv()
-        data = json.loads(msg)
-        for ev in data:
-            if ev.get("ev") != "A":
-                continue
-            symbol = ev["sym"]
-            price = ev["c"]
-            try:
-                if should_buy(symbol, price) and symbol not in held:
-                    qty = calculate_qty(price)
-                    place_order(symbol, qty, price)
-                    record_position(symbol, price, qty)
-                    held.add(symbol)
-                elif symbol in held and should_sell(symbol, price):
-                    qty = get_qty_held(symbol)
-                    place_order(symbol, -qty, price)
-                    remove_position(symbol)
-                    held.remove(symbol)
-            except Exception as trade_error:
-                print(f"🚫 Trade error for {symbol}: {trade_error}")
-    except Exception as e:
-        print(f"⚠️ Chunk {chunk_index} error: {e}")
-        await asyncio.sleep(2)
-
+        try:
+            data = json.loads(msg)
+            for ev in data:
+                if ev.get("ev") != "A":
+                    continue
+                symbol = ev["sym"]
+                price = ev["c"]
+                try:
+                    if should_buy(symbol, price) and symbol not in held:
+                        qty = calculate_qty(price)
+                        place_order(symbol, qty, price)
+                        record_position(symbol, price, qty)
+                        held.add(symbol)
+                    elif symbol in held and should_sell(symbol, price):
+                        qty = get_qty_held(symbol)
+                        place_order(symbol, -qty, price)
+                        remove_position(symbol)
+                        held.remove(symbol)
+                except Exception as trade_error:
+                    print(f"🚫 Trade error for {symbol}: {trade_error}")
+                try:
+                    for ev in data:
+                        if ev.get("ev") != "A":
+                            continue
+                        symbol = ev["sym"]
+                        price = ev["c"]
+                        if should_buy(symbol, price) and symbol not in held:
+                            qty = calculate_qty(price)
+                            place_order(symbol, qty, price)
+                            record_position(symbol, price, qty)
+                            held.add(symbol)
+        except Exception as e:
+                    print(f"⚠️ Chunk {chunk_index} error: {e}")
+                    await asyncio.sleep(2)
+        except Exception as e:
+        print(f"❌ Connection failed for chunk {chunk_index}: {e}")
+        await asyncio.sleep(5)
 
 async def main():
     chunks = load_watchlist_chunks()
