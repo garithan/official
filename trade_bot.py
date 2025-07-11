@@ -39,34 +39,27 @@ async def trade_chunk(chunk, chunk_index):
             asyncio.create_task(keepalive())
 
             while True:
-                try:
-                    msg = await ws.recv()
-                    data = json.loads(msg)
-                    for ev in data:
-                        if ev.get("ev") != "A":
-                            continue
-                        symbol = ev["sym"]
-                        price = ev["c"]
-if should_buy(symbol, price) and symbol not in held:
-                            qty = calculate_qty(price)
-                            place_order(symbol, qty, price)
-                            record_position(symbol, price, qty)
-                            held.add(symbol)
-                        elif symbol in held and should_sell(symbol, price):
-                            qty = get_qty_held(symbol)
-                            place_order(symbol, -qty, price)  # sell order
-                            remove_position(symbol)
-                            held.remove(symbol)
-                            qty = calculate_qty(price)
-                            place_order(symbol, qty, price)
-                            record_position(symbol, price, qty)
-                            held.add(symbol)
-                except Exception as e:
-                    print(f"⚠️ Chunk {chunk_index} error: {e}")
-                    await asyncio.sleep(2)
+    try:
+        msg = await ws.recv()
+        data = json.loads(msg)
+        for ev in data:
+            if ev.get("ev") != "A":
+                continue
+            symbol = ev["sym"]
+            price = ev["c"]
+            if should_buy(symbol, price) and symbol not in held:
+                qty = calculate_qty(price)
+                place_order(symbol, qty, price)
+                record_position(symbol, price, qty)
+                held.add(symbol)
+            elif symbol in held and should_sell(symbol, price):
+                qty = get_qty_held(symbol)
+                place_order(symbol, -qty, price)  # sell order
+                remove_position(symbol)
+                held.remove(symbol)
     except Exception as e:
-        print(f"❌ Connection failed for chunk {chunk_index}: {e}")
-        await asyncio.sleep(5)
+        print(f"⚠️ Chunk {chunk_index} error: {e}")
+        await asyncio.sleep(2)
 
 async def main():
     chunks = load_watchlist_chunks()
