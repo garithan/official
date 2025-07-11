@@ -1,104 +1,75 @@
-import os
+
 import asyncio
-from datetime import datetime, time
-from alpaca.data.live import StockDataStream
-from alpaca.trading.client import TradingClient
-from alpaca.trading.requests import MarketOrderRequest, TrailingStopOrderRequest, LimitOrderRequest
-from alpaca.trading.enums import OrderSide, TimeInForce, OrderType
+import json
+import websockets
+import os
+from datetime import datetime
 from dotenv import load_dotenv
 from utils import (
-    should_buy, calculate_qty, send_discord_alert, get_positions
+    should_buy,
+    should_sell,
+    calculate_qty,
+    place_order,
+    record_position,
+    update_high,
+    get_qty_held,
+    remove_position,
+    get_positions,
+    send_discord_alert
 )
 
 load_dotenv()
 
-API_KEY = os.getenv("ALPACA_KEY_ID")
-API_SECRET = os.getenv("ALPACA_SECRET_KEY")
-BASE_URL = os.getenv("ALPACA_BASE_URL")
-TRADE_PERCENT = float(os.getenv("TRADE_AMOUNT_PERCENT", "2"))
+POLYGON_KEY = os.getenv("POLYGON_API_KEY")
+POSITIONS = set(get_positions())
 
-client = TradingClient(API_KEY, API_SECRET, paper=True)
-positions = get_positions()
+async def handle_ticker_data(ev):
+    symbol = ev["sym"]
+    price = ev["c"]
 
-# Load and limit tickers
-MAX_TICKERS = 150  # Adjust based on your Alpaca plan
-with open("tickers.txt", "r") as f:
-    tickers = [line.strip() for line in f.readlines() if line.strip()][:MAX_TICKERS]
+    if should_buy(symbol, price) and symbol not in POSITIONS:
+        qty = calculate_qty(price)
+        place_order(symbol, qty, price)
+        record_position(symbol, price, qty)
+        POSITIONS.add(symbol)
+        send_discord_alert(f"🟢 Bought {symbol} @ ${price:.2f} (qty: {qty})")
 
-stream = StockDataStream(API_KEY, API_SECRET)
+    elif symbol in POSITIONS:
+        update_high(symbol, price)
+        if should_sell(symbol, price):
+            qty = get_qty_held(symbol)
+            place_order(symbol, -qty, price)
+            remove_position(symbol)
+            POSITIONS.remove(symbol)
+            send_discord_alert(f"💰 Sold {symbol} @ ${price:.2f} (qty: {qty})")
 
-async def handle_trade(data):
-    symbol = data.symbol
-    price = data.price
+async def stream_polygon_data(tickers):
+    uri = f"wss://socket.polygon.io/stocks"
+    async with websockets.connect(uri) as ws:
+        await ws.send(json.dumps({"action": "auth", "params": POLYGON_KEY}))
+        auth_resp = await ws.recv()
+        print(f"✅ Auth response: {auth_resp}")
 
-    if symbol in positions:
-        return
+        subs = ",".join([f"A.{t}" for t in tickers])
+        await ws.send(json.dumps({"action": "subscribe", "params": subs}))
+        print(f"📡 Subscribed to {len(tickers)} tickers")
 
-    if not should_buy(symbol, price):
-        return
-
-    qty = calculate_qty(price)
-    try:
-        # Place limit buy
-        limit_price = round(price * 1.01, 2)
-        order = client.submit_order(
-            order_data=LimitOrderRequest(
-                symbol=symbol,
-                qty=qty,
-                side=OrderSide.BUY,
-                time_in_force=TimeInForce.DAY,
-                limit_price=limit_price
-            )
-        )
-
-        positions.add(symbol)
-
-        await asyncio.sleep(3)
-
-        client.submit_order(
-            order_data=LimitOrderRequest(
-                symbol=symbol,
-                qty=int(qty * 0.4),
-                side=OrderSide.SELL,
-                time_in_force=TimeInForce.GTC,
-                limit_price=round(price * 1.05, 2)
-            )
-        )
-
-        client.submit_order(
-            order_data=TrailingStopOrderRequest(
-                symbol=symbol,
-                qty=int(qty * 0.6),
-                side=OrderSide.SELL,
-                time_in_force=TimeInForce.GTC,
-                trail_percent=3.0
-            )
-        )
-
-        async def sell_at_eod():
-            while True:
-                now = datetime.now()
-                if time(15, 55) <= now.time() <= time(15, 56):
-                    client.close_position(symbol)
-                    break
-                await asyncio.sleep(30)
-        asyncio.create_task(sell_at_eod())
-
-        send_discord_alert(f"""
-Bought {symbol} @ ${price:.2f} (qty: {qty})
-Sell 40% @ +5%
-Trail stop 60% @ 3%
-Final sell: 3:55PM closeout
-""")
-
-    except Exception as e:
-        print(f"Error placing orders for {symbol}: {e}")
+        while True:
+            try:
+                msg = await ws.recv()
+                data = json.loads(msg)
+                for ev in data:
+                    if ev.get("ev") == "A":
+                        await handle_ticker_data(ev)
+            except Exception as e:
+                print(f"⚠️ Error: {e}")
+                await asyncio.sleep(5)
 
 async def main():
-    for symbol in tickers:
-        stream.subscribe_trades(handle_trade, symbol)
-        await asyncio.sleep(0.05)  # Delay to avoid flooding connection
-    await stream._run_forever()
+    with open("tickers.txt", "r") as f:
+        tickers = [line.strip() for line in f.readlines() if line.strip()]
+    await stream_polygon_data(tickers)
 
 if __name__ == "__main__":
+    print(f"🔁 Bot started at {datetime.now()}")
     asyncio.run(main())
