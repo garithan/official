@@ -47,7 +47,16 @@ async def trade_chunk(chunk, chunk_index):
                             continue
                         symbol = ev["sym"]
                         price = ev["c"]
-                        if should_buy(symbol, price) and symbol not in held:
+if should_buy(symbol, price) and symbol not in held:
+                            qty = calculate_qty(price)
+                            place_order(symbol, qty, price)
+                            record_position(symbol, price, qty)
+                            held.add(symbol)
+                        elif symbol in held and should_sell(symbol, price):
+                            qty = get_qty_held(symbol)
+                            place_order(symbol, -qty, price)  # sell order
+                            remove_position(symbol)
+                            held.remove(symbol)
                             qty = calculate_qty(price)
                             place_order(symbol, qty, price)
                             record_position(symbol, price, qty)
