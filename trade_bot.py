@@ -72,7 +72,7 @@ async def trade_chunk(chunk, chunk_index):
         await asyncio.sleep(5)
 
 async def main():
-    chunks = load_watchlist_chunks(chunk_size=300)  # limit to avoid 1008 error
+    chunks = load_watchlist_chunks(chunk_size=75)  # limit to avoid 1008 error
     print(f"🚀 Starting {len(chunks)} WebSocket connections")
 
     tasks = [trade_chunk(chunk, i + 1) for i, chunk in enumerate(chunks)]
