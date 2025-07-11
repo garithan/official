@@ -91,6 +91,27 @@ def remove_position(symbol):
     except:
         pass
 
+def record_position(symbol, price, qty):
+    try:
+        with open(POSITIONS_FILE, "r") as f:
+            data = json.load(f)
+    except:
+        data = {}
+    data[symbol] = {"price": price, "qty": qty, "high": price}
+    with open(POSITIONS_FILE, "w") as f:
+        json.dump(data, f)
+
+def update_high(symbol, new_price):
+    try:
+        with open(POSITIONS_FILE, "r") as f:
+            data = json.load(f)
+        if symbol in data and new_price > data[symbol]["high"]:
+            data[symbol]["high"] = new_price
+            with open(POSITIONS_FILE, "w") as f:
+                json.dump(data, f)
+    except:
+        pass
+
 def should_sell(symbol, price):
     try:
         with open(POSITIONS_FILE, "r") as f:
@@ -99,7 +120,19 @@ def should_sell(symbol, price):
         if not entry:
             return False
         entry_price = entry["price"]
+        high = entry["high"]
         change = (price - entry_price) / entry_price
-        return change >= 0.05 or change <= -0.08  # example logic: +5% target or -8% stop
+
+        # Hard stop loss at -8%
+        if change <= -0.08:
+            send_discord_alert(f"🔻 STOP LOSS: {symbol} dropped {change:.2%}")
+            return True
+
+        # Trailing stop: if price drops 3% from the high
+        if high and (price < high * 0.97):
+            send_discord_alert(f"🔁 TRAILING STOP: {symbol} dropped from high ${high:.2f} to ${price:.2f}")
+            return True
+
+        return False
     except:
         return False
